@@ -1,0 +1,14 @@
+{
+  "name": "financeiro-app",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Sistema financeiro pessoal — React + Vite + Express + MySQL",
+  "scripts": {
+    "install:all": "npm --prefix server install && npm --prefix client install",
+    "dev": "concurrently \"npm --prefix server run dev\" \"npm --prefix client run dev\"",
+    "db": "npm --prefix server run db"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}
