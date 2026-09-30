@@ -10,7 +10,8 @@ export default function Transacoes() {
   const [erro, setErro] = useState('');
   const [form, setForm] = useState({
     tipo: 'despesa', valor: '', data_vencimento: hojeISO(), categoria: '', descricao: '',
-    forma_pagamento: 'pix', conta_id: '', cartao_id: '', status: 'pago', parcelas: 1, comprovante: null,
+    forma_pagamento: 'pix', conta_id: '', cartao_id: '', status: 'pago', parcelas: 1,
+    recorrencia: 'unica', comprovante: null,
   });
 
   const load = () => Promise.all([
@@ -29,7 +30,7 @@ export default function Transacoes() {
       const fd = new FormData();
       Object.entries(form).forEach(([k, v]) => { if (v !== '' && v !== null) fd.append(k, v); });
       await api('/transacoes', { method: 'POST', formData: fd });
-      setForm({ ...form, valor: '', descricao: '', categoria: '', parcelas: 1, comprovante: null });
+      setForm({ ...form, valor: '', descricao: '', categoria: '', parcelas: 1, recorrencia: 'unica', comprovante: null });
       e.target.reset();
       await load();
     } catch (err) { setErro(err.message); }
@@ -75,8 +76,12 @@ export default function Transacoes() {
           <select value={form.status} onChange={(e) => set('status', e.target.value)}>
             <option value="pago">Pago</option><option value="pendente">Pendente</option>
           </select>
-          <input type="number" min="1" max="60" title="Parcelas" style={{ width: 90 }}
+          <input type="number" min="1" max="60" title="Parcelas (financiamento, parcela de banco)" style={{ width: 90 }}
             value={form.parcelas} onChange={(e) => set('parcelas', e.target.value)} />
+          <select title="Recorrência" value={form.recorrencia} onChange={(e) => set('recorrencia', e.target.value)}>
+            <option value="unica">Única</option>
+            <option value="mensal">Mensal (fixa)</option>
+          </select>
           <input type="file" accept="image/jpeg,image/png,application/pdf" title="Comprovante"
             onChange={(e) => set('comprovante', e.target.files[0])} />
           <button className="solid" type="submit">Adicionar</button>
@@ -94,7 +99,7 @@ export default function Transacoes() {
                 <td className="muted">{t.categoria}</td>
                 <td className="muted">{t.conta_nome || t.cartao_nome || '—'}</td>
                 <td className="num muted">{dataBR(t.data_vencimento)}</td>
-                <td className="muted">{t.parcela_total > 1 ? `${t.parcela_atual || t.parcela_total}/${t.parcela_total}` : '—'}</td>
+                <td className="muted">{t.parcela_total > 1 ? `${t.parcela_atual || t.parcela_total}/${t.parcela_total}` : t.recorrencia === 'mensal' ? '↻ mensal' : '—'}</td>
                 <td>{t.data_pagamento ? <span className="pill ok">pago</span> : <span className="pill">pendente</span>}</td>
                 <td className="num" style={{ textAlign: 'right' }}>
                   <span className={t.tipo === 'receita' ? 'pos' : 'neg'}>{t.tipo === 'receita' ? '+ ' : '− '}{BRL(t.valor)}</span>

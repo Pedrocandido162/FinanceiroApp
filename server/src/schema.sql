@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS contas (
 CREATE TABLE IF NOT EXISTS cartoes (
   id INT AUTO_INCREMENT PRIMARY KEY,
   usuario_id INT NOT NULL,
+  banco VARCHAR(120) NULL,
   nome VARCHAR(120) NOT NULL,
   limite DECIMAL(12,2) NOT NULL DEFAULT 0,
   fechamento_dia TINYINT NOT NULL DEFAULT 25,
@@ -46,6 +47,7 @@ CREATE TABLE IF NOT EXISTS transacoes (
   descricao VARCHAR(255) NOT NULL,
   forma_pagamento VARCHAR(40) DEFAULT 'pix',
   comprovante_path VARCHAR(255) NULL,
+  recorrencia ENUM('unica','mensal') NOT NULL DEFAULT 'unica',
   criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE CASCADE,
   FOREIGN KEY (conta_id) REFERENCES contas(id) ON DELETE SET NULL,

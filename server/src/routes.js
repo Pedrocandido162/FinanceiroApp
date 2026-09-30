@@ -17,6 +17,44 @@ const upload = multer({
 
 const moeda = (v) => Number(v || 0);
 
+// formata Date local como YYYY-MM-DD (sem problemas de fuso)
+const iso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+
+// garante que transações mensais tenham parcelas geradas até 3 meses além do corrente
+async function garantirRecorrencias(uid) {
+  const recs = await q("SELECT * FROM transacoes WHERE usuario_id=? AND recorrencia='mensal'", [uid]);
+  for (const t of recs) {
+    const [base] = await q(
+      'SELECT MAX(vencimento) mx, MAX(numero) mn, COUNT(*) n FROM parcelas WHERE transacao_id=?', [t.id]);
+    const dia = Math.min(Number(t.data_vencimento.slice(8, 10)) || 1, 28);
+    if (!base.n) {
+      // primeira geração: 12 parcelas mensais a partir do vencimento base (total=0 => recorrente)
+      const [ano, mes] = t.data_vencimento.slice(0, 7).split('-').map(Number);
+      for (let i = 0; i < 12; i++) {
+        await q('INSERT INTO parcelas (transacao_id, numero, total, valor, vencimento, status) VALUES (?,?,?,?,?,?)',
+          [t.id, i + 1, 0, t.valor, iso(new Date(ano, mes - 1 + i, dia)), 'pendente']);
+      }
+      continue;
+    }
+    // estende até o 3º mês seguinte ao corrente
+    const [ay, am] = base.mx.slice(0, 7).split('-').map(Number);
+    const cursor = new Date(ay, am, dia); // 1º mês após o último gerado
+    const agora = new Date();
+    const limite = new Date(agora.getFullYear(), agora.getMonth() + 4, 1);
+    let numero = base.mn || 0;
+    while (cursor <= limite) {
+      const venc = iso(cursor);
+      const existe = await q('SELECT 1 x FROM parcelas WHERE transacao_id=? AND vencimento=?', [t.id, venc]);
+      if (!existe.length) {
+        numero++;
+        await q('INSERT INTO parcelas (transacao_id, numero, total, valor, vencimento, status) VALUES (?,?,?,?,?,?)',
+          [t.id, numero, 0, t.valor, venc, 'pendente']);
+      }
+      cursor.setMonth(cursor.getMonth() + 1);
+    }
+  }
+}
+
 /* ================= AUTH ================= */
 router.post('/auth/registro', async (req, res) => {
   const { nome, email, senha } = req.body || {};
@@ -113,26 +151,28 @@ router.post('/transacoes', auth, upload.single('comprovante'), async (req, res) 
   const valorParcela = Math.round((valor / parcelas) * 100) / 100;
   const pago = b.status === 'pago';
 
+  const mensal = b.recorrencia === 'mensal';
   const conn = await (await import('./db.js')).pool.getConnection();
   try {
     await conn.beginTransaction();
     const [r] = await conn.query(
       `INSERT INTO transacoes (usuario_id, conta_id, cartao_id, tipo, valor, data_vencimento, data_pagamento,
-        categoria, descricao, forma_pagamento, comprovante_path)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+        categoria, descricao, forma_pagamento, comprovante_path, recorrencia)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
       [req.usuario.id, contaId, cartaoId, b.tipo === 'receita' ? 'receita' : 'despesa', valor,
        b.data_vencimento, pago ? b.data_pagamento || b.data_vencimento : null,
        b.categoria || 'Outros', b.descricao, b.forma_pagamento || 'pix',
-       req.file ? req.file.path : null]
+       req.file ? req.file.path : null, mensal ? 'mensal' : 'unica']
     );
     const transacaoId = r.insertId;
-    for (let i = 1; i <= parcelas; i++) {
-      const [ano, mes, dia] = b.data_vencimento.split('-').map(Number);
-      const d = new Date(ano, mes - 1 + (i - 1), dia);
-      const venc = d.toISOString().slice(0, 10);
+    const [ano, mes, dia0] = b.data_vencimento.split('-').map(Number);
+    const dia = Math.min(dia0, 28);
+    const gerar = mensal ? 12 : parcelas;
+    for (let i = 1; i <= gerar; i++) {
+      const venc = iso(new Date(ano, mes - 1 + (i - 1), dia));
       await conn.query(
         'INSERT INTO parcelas (transacao_id, numero, total, valor, vencimento, status) VALUES (?,?,?,?,?,?)',
-        [transacaoId, i, parcelas, valorParcela, venc, pago ? 'pago' : 'pendente']);
+        [transacaoId, i, mensal ? 0 : parcelas, mensal ? valor : valorParcela, venc, pago ? 'pago' : 'pendente']);
     }
     await conn.commit();
     res.status(201).json({ id: transacaoId });
@@ -160,6 +200,7 @@ router.delete('/transacoes/:id', auth, async (req, res) => {
 /* ================= DASHBOARD ================= */
 router.get('/dashboard', auth, async (req, res) => {
   const uid = req.usuario.id;
+  await garantirRecorrencias(uid);
   const hoje = new Date();
   const inicioMes = new Date(hoje.getFullYear(), hoje.getMonth(), 1).toISOString().slice(0, 10);
   const fimMes = new Date(hoje.getFullYear(), hoje.getMonth() + 1, 0).toISOString().slice(0, 10);
@@ -181,7 +222,7 @@ router.get('/dashboard', auth, async (req, res) => {
 
   const pend = await q(
     `SELECT tipo, SUM(p.valor) v FROM parcelas p JOIN transacoes t ON t.id = p.transacao_id
-     WHERE t.usuario_id=? AND p.status='pendente' GROUP BY t.tipo`, [uid]);
+     WHERE t.usuario_id=? AND p.status='pendente' AND p.vencimento <= LAST_DAY(CURDATE()) GROUP BY t.tipo`, [uid]);
   const pagar = moeda(pend.find((p) => p.tipo === 'despesa')?.v);
   const receber = moeda(pend.find((p) => p.tipo === 'receita')?.v);
 
@@ -214,6 +255,7 @@ router.get('/dashboard', auth, async (req, res) => {
 /* ================= AGENDA ================= */
 router.get('/agenda', auth, async (req, res) => {
   const uid = req.usuario.id;
+  await garantirRecorrencias(uid);
   const f = req.query.filtro || '7';
   const hoje = new Date().toISOString().slice(0, 10);
   let cond = 'p.vencimento = CURDATE()';
@@ -262,11 +304,39 @@ router.get('/cartoes', auth, async (req, res) => {
 });
 
 router.post('/cartoes', auth, async (req, res) => {
-  const { nome, limite = 0, fechamento_dia = 25, vencimento_dia = 5 } = req.body || {};
+  const { nome, banco = null, limite = 0, fechamento_dia = 25, vencimento_dia = 5 } = req.body || {};
   if (!nome) return res.status(400).json({ erro: 'Nome obrigatório.' });
-  const r = await q('INSERT INTO cartoes (usuario_id, nome, limite, fechamento_dia, vencimento_dia) VALUES (?,?,?,?,?)',
-    [req.usuario.id, nome, limite, fechamento_dia, vencimento_dia]);
+  const r = await q('INSERT INTO cartoes (usuario_id, banco, nome, limite, fechamento_dia, vencimento_dia) VALUES (?,?,?,?,?,?)',
+    [req.usuario.id, banco || null, nome, limite, fechamento_dia, vencimento_dia]);
   res.status(201).json({ id: r.insertId });
+});
+
+// cartões agrupados por banco (virtuais do mesmo banco ficam juntos)
+router.get('/cartoes/bancos', auth, async (req, res) => {
+  const uid = req.usuario.id;
+  const cartoes = await q('SELECT * FROM cartoes WHERE usuario_id=? AND ativo=1 ORDER BY banco, nome', [uid]);
+  const mapa = {};
+  for (const c of cartoes) {
+    const chave = c.banco || 'Outros';
+    if (!mapa[chave]) mapa[chave] = { banco: chave, cartoes: [], limite: 0, usado: 0 };
+    mapa[chave].cartoes.push(c);
+    mapa[chave].limite += moeda(c.limite);
+  }
+  const hoje = new Date();
+  const ini = new Date(hoje.getFullYear(), hoje.getMonth(), 1).toISOString().slice(0, 10);
+  const fim = new Date(hoje.getFullYear(), hoje.getMonth() + 1, 0).toISOString().slice(0, 10);
+  for (const g of Object.values(mapa)) {
+    for (const c of g.cartoes) {
+      const [u] = await q('SELECT COALESCE(SUM(valor),0) v FROM transacoes WHERE cartao_id=? AND data_pagamento IS NULL', [c.id]);
+      const [f] = await q('SELECT COALESCE(SUM(valor),0) v FROM transacoes WHERE cartao_id=? AND data_pagamento BETWEEN ? AND ?', [c.id, ini, fim]);
+      c.usado = moeda(u.v); c.fatura_atual = moeda(f.v);
+      c.disponivel = moeda(c.limite) - c.usado;
+      c.proximas_faturas = [];
+      g.usado += c.usado;
+    }
+    g.disponivel = g.limite - g.usado;
+  }
+  res.json(Object.values(mapa));
 });
 
 router.get('/cartoes/:id/compras', auth, async (req, res) => {

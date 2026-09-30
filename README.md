@@ -35,9 +35,17 @@ Acesse http://localhost:5173 — crie seu usuário na tela de login.
 
 ## Funcionalidades
 - Dashboard: saldo, receitas, despesas, resultado, a pagar/receber, gráficos
-- Receitas/despesas com parcelamento, recorrência, comprovante (upload), status
+- Receitas/despesas com parcelamento (financiamento, parcela de banco), **recorrência mensal**
+  (despesas fixas — gera os próximos vencimentos automaticamente), comprovante, status
 - Contas e carteiras + transferências (não contabiliza como receita/despesa)
-- Cartões de crédito: limite, fatura atual, fechamento/vencimento, próximas faturas
+- Cartões de crédito: **vários cartões virtuais agrupados por banco**, limite individual
+  e consolidado por banco, fatura atual, fechamento/vencimento
 - Agenda a pagar/receber com filtros (hoje, 7 dias, mês, próximo mês, atrasadas)
 - Metas financeiras com progresso
 - Auth: JWT + bcrypt, papéis admin/usuário, logs de acesso
+
+## Atualizando o banco (novas colunas)
+Ao atualizar o projeto, rode novamente para aplicar migrações:
+```bash
+npm run db
+```
